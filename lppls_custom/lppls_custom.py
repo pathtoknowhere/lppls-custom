@@ -67,7 +67,7 @@ class LPPLS(object):
 
         return np.linalg.lstsq(A.T, P, rcond=-1.0)[0]
 
-    def fit(self, observations, max_searches, minimizer='Nelder-Mead'):
+    def fit(self, observations, max_searches, minimizer='SLSQP', bounds=[]):
         """
         Args:
             observations (Mx2 numpy array): the observed time-series data.
@@ -80,34 +80,30 @@ class LPPLS(object):
         search_count = 0
         # find bubble
         while search_count < max_searches:
-            tc_init_min, tc_init_max = self._get_tc_bounds(observations, 0.20, 0.20)
-
-            # @TODO make configurable
             # set random initialization limits for non-linear params
             init_limits = [
-                (tc_init_min, tc_init_max),  # tc : Critical Time
-                (0, 2),  # m : 0.1 ≤ m ≤ 0.9
-                (1, 50),  # ω : 6 ≤ ω ≤ 13
+                (bounds[0][0], bounds[0][1]),  # tc : Critical Time
+                (bounds[1][0], bounds[1][1]),  # m :
+                (bounds[2][0], bounds[2][1]),  # ω :
             ]
 
             # randomly choose vals within bounds for non-linear params
             non_lin_vals = [random.uniform(a[0], a[1]) for a in init_limits]
-
             tc = non_lin_vals[0]
-            m = non_lin_vals[1]
-            w = non_lin_vals[2]
+            m = non_lin_vals[1]  # (bounds[1][0] + bounds[1][1]) / 2
+            w = non_lin_vals[2]  # (bounds[2][0] + bounds[2][1]) / 2
             seed = np.array([tc, m, w])
 
             # Increment search count on SVD convergence error, but raise all other exceptions.
             try:
-                tc, m, w, a, b, c, c1, c2 = self.minimize(observations, seed, minimizer)
+                tc, m, w, a, b, c, c1, c2 = self.minimize(observations, seed, minimizer, bounds)
                 return tc, m, w, a, b, c, c1, c2
             except (np.linalg.LinAlgError, UnboundLocalError, ValueError):
                 search_count += 1
 
         return 0, 0, 0, 0, 0, 0, 0, 0
 
-    def minimize(self, observations, seed, minimizer):
+    def minimize(self, observations, seed, minimizer, bounds=[]):
         """
         Args:
             observations (np.ndarray):  the observed time-series data.
@@ -122,7 +118,8 @@ class LPPLS(object):
             args=observations,
             fun=self.func_restricted,
             x0=seed,
-            method=minimizer
+            method=minimizer,
+            bounds=bounds
         )
 
         if cofs.success:
