@@ -67,7 +67,7 @@ class LPPLS(object):
 
         return np.linalg.lstsq(A.T, P, rcond=-1.0)[0]
 
-    def fit(self, observations, max_searches, minimizer='SLSQP', bounds=[]):
+    def fit(self, observations, max_searches, minimizer, bounds):
         """
         Args:
             observations (Mx2 numpy array): the observed time-series data.
@@ -77,21 +77,18 @@ class LPPLS(object):
         Returns:
             tc, m, w, a, b, c, c1, c2
         """
+
         search_count = 0
+
         # find bubble
         while search_count < max_searches:
-            # set random initialization limits for non-linear params
-            init_limits = [
-                (bounds[0][0], bounds[0][1]),  # tc : Critical Time
-                (bounds[1][0], bounds[1][1]),  # m :
-                (bounds[2][0], bounds[2][1]),  # ω :
-            ]
-
             # randomly choose vals within bounds for non-linear params
-            non_lin_vals = [random.uniform(a[0], a[1]) for a in init_limits]
+            non_lin_vals = [random.uniform(bnd[0], bnd[1]) for bnd in bounds]
+            #
             tc = non_lin_vals[0]
-            m = non_lin_vals[1]  # (bounds[1][0] + bounds[1][1]) / 2
-            w = non_lin_vals[2]  # (bounds[2][0] + bounds[2][1]) / 2
+            m = non_lin_vals[1]
+            w = non_lin_vals[2]
+            #
             seed = np.array([tc, m, w])
 
             # Increment search count on SVD convergence error, but raise all other exceptions.
@@ -103,7 +100,7 @@ class LPPLS(object):
 
         return 0, 0, 0, 0, 0, 0, 0, 0
 
-    def minimize(self, observations, seed, minimizer, bounds=[]):
+    def minimize(self, observations, seed, minimizer, bounds):
         """
         Args:
             observations (np.ndarray):  the observed time-series data.
@@ -219,45 +216,56 @@ class LPPLS(object):
         return result
 
     def _func_compute_indicator(self, args):
-
+        #
         obs, n_iter, window_size, smallest_window_size, increment, max_searches, filter_conditions_config = args
-
+        #
         n_fits = (window_size - smallest_window_size) // increment
-
+        #
         res = []
 
         # run n fits on the observation slice.
         for j in range(n_fits):
             obs_shrinking_slice = obs[:, j * increment:window_size + n_iter]
 
-            # fit the model to the data and get back the params
-            tc, m, w, a, b, c, c1, c2 = self.fit(obs_shrinking_slice, max_searches, minimizer='SLSQP')
+            #
+            start = obs_shrinking_slice[0][0]
+            end = obs_shrinking_slice[0][-1]
+            delta = end - start
 
-            first = obs_shrinking_slice[0][0]
-            last = obs_shrinking_slice[0][-1]
+            # fit model to data and return params
+            tc, m, w, a, b, c, c1, c2 = self.fit(
+                obs_shrinking_slice,
+                max_searches,
+                minimizer='SLSQP', # Sequential Least SQuares Programming
+                bounds=[ # search space guidance from Zhang & Sornette (2016)
+                    (end - (0.2 * delta), end + (0.2 * delta)), # tc
+                    (0, 2), # m
+                    (1, 50) # w
+                ]
+            )
 
             qualified = {}
+
             # TODO: add docstring
             # filter_conditions_config = [
             #   {'condition_1':[tc_range, m_range, w_range, O_min, D_min]},
-            #   {'condition_2':[tc_range, m_range, w_range, O_min, O_min]}
+            #   {'condition_2':[tc_range, m_range, w_range, O_min, D_min]}
             # ]
+
             for condition in filter_conditions_config:
                 for value in condition:
-                    tc_min, tc_max = condition[value][0]
+                    tc_min, tc_max = eval(condition[value][0]) # use 'eval()' here?
                     m_min, m_max = condition[value][1]
                     w_min, w_max = condition[value][2]
                     O_min = condition[value][3]
                     D_min = condition[value][4]
 
-                    tc_init_min, tc_init_max = self._get_tc_bounds(obs_shrinking_slice, tc_min, tc_max)
-
-                    tc_in_range = last - tc_init_min < tc < last + tc_init_max
+                    tc_in_range = tc_min < tc < tc_max
                     m_in_range = m_min < m < m_max
                     w_in_range = w_min < w < w_max
 
-                    O_in_range = ((w / (2 * np.pi)) * np.log(abs(tc / (tc - last)))) > O_min
-
+                    #
+                    O_in_range = (w / 2) * np.log(abs((tc - start) / (end - start))) > O_min
                     D_in_range = (m * abs(b)) / (w * abs(c)) > D_min if m > 0 and w > 0 else False
 
                     if tc_in_range and m_in_range and w_in_range and O_in_range and D_in_range:
@@ -285,24 +293,6 @@ class LPPLS(object):
             })
 
         return res
-
-    def _get_tc_bounds(self, obs, lower_bound_pct, upper_bound_pct):
-        """
-        Args:
-            obs (Mx2 numpy array): the observed data
-            lower_bound_pct (float): percent of (t_2 - t_1) to use as the LOWER bound initial value for the optimization
-            upper_bound_pct (float): percent of (t_2 - t_1) to use as the UPPER bound initial value for the optimization
-        Returns:
-            tc_init_min, tc_init_max
-        """
-        t_first = obs[0, 0]
-        t_last = obs[0, -1]
-        t_delta = t_last - t_first
-        pct_delta_min = t_delta * lower_bound_pct
-        pct_delta_max = t_delta * upper_bound_pct
-        tc_init_min = t_last - pct_delta_min
-        tc_init_max = t_last + pct_delta_max
-        return tc_init_min, tc_init_max
 
     def res_to_df(self, res, condition_name):
         """
