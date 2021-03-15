@@ -120,7 +120,6 @@ class LPPLS(object):
         )
 
         if cofs.success:
-
             tc = cofs.x[0]
             m = cofs.x[1]
             w = cofs.x[2]
@@ -131,6 +130,7 @@ class LPPLS(object):
             # Use sklearn format for storing fit params
             for coef in ['tc', 'm', 'w', 'a', 'b', 'c', 'c1', 'c2']:
                 self.coef_[coef] = eval(coef)
+
             return tc, m, w, a, b, c, c1, c2
         else:
             raise UnboundLocalError
@@ -166,29 +166,30 @@ class LPPLS(object):
 
         fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, sharex=True, figsize=(15, 12))
         fig.suptitle(title)
+
         # plot pos bubbles
         ax1_0 = ax1.twinx()
-        ax1.plot(res_df['price'].values, color='black')
-        ax1_0.plot(res_df['pos_conf'].values, label='bubble indicator (pos)')
+        ax1.plot(res_df['pos_conf'].values, label='bubble indicator (pos)')
+        ax1_0.plot(res_df['price'].values, color='orange')
 
         # plot neg bubbles
         ax2_0 = ax2.twinx()
-        ax2.plot(res_df['price'].values, color='black')
-        ax2_0.plot(res_df['neg_conf'].values, label='bubble indicator (neg)')
+        ax2.plot(res_df['neg_conf'].values, label='bubble indicator (neg)')
+        ax2_0.plot(res_df['price'].values, color='orange')
 
         # set grids
         ax1.grid(which='major', axis='both', linestyle='--')
         ax2.grid(which='major', axis='both', linestyle='--')
 
         # set labels
-        ax1.set_ylabel('price')
-        ax2.set_ylabel('price')
+        ax1.set_ylabel('bubble indicator (pos)')
+        ax2.set_ylabel('bubble indicator (neg)')
 
-        ax1_0.set_ylabel('bubble indicator (pos)')
-        ax2_0.set_ylabel('bubble indicator (neg)')
+        ax1_0.set_ylabel('price')
+        ax2_0.set_ylabel('price')
 
-        ax1_0.legend(loc=2)
-        ax2_0.legend(loc=2)
+        # ax1.legend(loc=2)
+        # ax2.legend(loc=2)
 
     def mp_compute_indicator(self, workers, window_size=80, smallest_window_size=20, increment=5, max_searches=25,
                              filter_conditions_config=[]):
@@ -237,10 +238,10 @@ class LPPLS(object):
                 obs_shrinking_slice,
                 max_searches,
                 minimizer='SLSQP', # Sequential Least SQuares Programming
-                bounds=[ # search space guidance from Zhang & Sornette (2016)
-                    (end - (0.2 * delta), end + (0.2 * delta)), # tc
-                    (0, 2), # m
-                    (1, 50) # w
+                bounds=[ # search space guidance from Shu & Zhu (2019)
+                  (end, end + (delta / 3)), # tc
+                  (0, 1), # m
+                  (1, 50) # w
                 ]
             )
 
@@ -254,7 +255,7 @@ class LPPLS(object):
 
             for condition in filter_conditions_config:
                 for value in condition:
-                    tc_min, tc_max = eval(condition[value][0]) # use 'eval()' here?
+                    tc_min, tc_max = eval(condition[value][0])
                     m_min, m_max = condition[value][1]
                     w_min, w_max = condition[value][2]
                     O_min = condition[value][3]
@@ -264,9 +265,11 @@ class LPPLS(object):
                     m_in_range = m_min < m < m_max
                     w_in_range = w_min < w < w_max
 
-                    #
-                    O_in_range = (w / 2) * np.log(abs((tc - start) / (end - start))) > O_min
-                    D_in_range = (m * abs(b)) / (w * abs(c)) > D_min if m > 0 and w > 0 else False
+                    ## formulas from Shu & Zhu (2019)
+                    # number of Oscillations (half-periods), used to distinguish a genuine log-periodic signal from noise
+                    O_in_range = (w / 2) * np.log((tc - start) / (tc - end)) > O_min
+                    # Damping parameter expresses the crash hazard rate h(t) is non-negative by definition
+                    D_in_range = (m * abs(b)) / (w * c) > D_min
 
                     if tc_in_range and m_in_range and w_in_range and O_in_range and D_in_range:
                         is_qualified = True
@@ -288,8 +291,8 @@ class LPPLS(object):
                 'c2': c2,
                 'qualified': qualified,
                 'sign': sign,
-                't1': first,
-                't2': last,
+                't1': start,
+                't2': end
             })
 
         return res
