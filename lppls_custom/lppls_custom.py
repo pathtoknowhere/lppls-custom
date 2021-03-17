@@ -1,11 +1,11 @@
-import multiprocessing
+from multiprocessing import Manager, Pool, Process
 from matplotlib import pyplot as plt
 from numba import njit
 import numpy as np
 import pandas as pd
 import random
 from scipy.optimize import minimize
-
+import time
 
 class LPPLS(object):
 
@@ -19,7 +19,7 @@ class LPPLS(object):
 
         self.observations = observations
         self.coef_ = {}
-        self.indicator_result = []
+        self.indicator_result_list = None
 
     @staticmethod
     @njit
@@ -74,6 +74,7 @@ class LPPLS(object):
             max_searches (int): The maxi amount of searches to perform before giving up. The literature suggests 25.
             minimizer (str): See list of valid methods to pass to scipy.optimize.minimize:
                 https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.minimize.html#scipy.optimize.minimize
+            bounds (list):
         Returns:
             tc, m, w, a, b, c, c1, c2
         """
@@ -107,6 +108,7 @@ class LPPLS(object):
             seed (list):  time-critical, omega, and m.
             minimizer (str):  See list of valid methods to pass to scipy.optimize.minimize:
                 https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.minimize.html#scipy.optimize.minimize
+            bounds (list):
         Returns:
             tc, m, w, a, b, c, c1, c2
         """
@@ -153,29 +155,28 @@ class LPPLS(object):
         data = data.set_index('Time')
         data.plot(figsize=(14, 8))
 
-    def plot_confidence_indicators(self, res, condition_name, title):
+    def plot_confidence_indicators(self, result_index, title):
         """
         Args:
-            res (list): result from mp_compute_indicator
-            condition_name (str): the name you assigned to the filter condition in your config
+            result_index (int):
             title (str): super title for both subplots
         Returns:
             nothing, should plot the indicator
         """
-        res_df = self.res_to_df(res, condition_name)
+        df = self.indicator_result_list[result_index]
 
         fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, sharex=True, figsize=(15, 12))
         fig.suptitle(title)
 
         # plot pos bubbles
         ax1_0 = ax1.twinx()
-        ax1.plot(res_df['pos_conf'].values, label='bubble indicator (pos)')
-        ax1_0.plot(res_df['price'].values, color='orange')
+        ax1.plot(df['pos_conf'].values, label='bubble indicator (pos)')
+        ax1_0.plot(df['price'].values, color='orange')
 
         # plot neg bubbles
         ax2_0 = ax2.twinx()
-        ax2.plot(res_df['neg_conf'].values, label='bubble indicator (neg)')
-        ax2_0.plot(res_df['price'].values, color='orange')
+        ax2.plot(df['neg_conf'].values, label='bubble indicator (neg)')
+        ax2_0.plot(df['price'].values, color='orange')
 
         # set grids
         ax1.grid(which='major', axis='both', linestyle='--')
@@ -191,34 +192,83 @@ class LPPLS(object):
         # ax1.legend(loc=2)
         # ax2.legend(loc=2)
 
-    def mp_compute_indicator(self, workers, window_size=80, smallest_window_size=20, increment=5, max_searches=25,
-                             filter_conditions_config=[]):
+    #
+    def compute_indicator_process(
+        self,
+        window_size,
+        smallest_window_size,
+        filter_conditions_config,
+        num_processes=1
+    ):
+        #*
+        print('\n' + f'Now starting {num_processes} process(es)...')
+        start = time.perf_counter()
+
+        with Manager() as manager:
+            self.indicator_result_list = manager.list()
+            #
+            processes = []
+
+            for k in range(num_processes):
+                #
+                p = Process(
+                      target=self._compute_indicator_pool,
+                      args=[
+                        window_size,
+                        smallest_window_size,
+                        filter_conditions_config,
+                        self.indicator_result_list
+                    ])
+                p.start()
+                processes.append(p)
+
+            for process in processes:
+                process.join()
+
+        #*
+        end = time.perf_counter()
+        print(f'...finished in {round(end - start, 2)} second(s).' + '\n')
+
+    #
+    def _compute_indicator_pool(
+        self,
+        window_size,
+        smallest_window_size,
+        filter_conditions_config,
+        indicator_result_list,
+        increment=5,
+        max_searches=25,
+        workers=4
+    ):
         obs_copy = self.observations
         obs_copy_len = len(obs_copy[0, :]) - window_size
 
-        func = self._func_compute_indicator
-
-        func_arg_map = [(
+        args_map = [(
             obs_copy[:, i:window_size + i],  # obs
             i,  # n_iter
             window_size,  # window_size
             smallest_window_size,  # smallest_window_size
-            increment,  # increment
-            max_searches,  # max_searches
             filter_conditions_config,
+            increment,  # increment
+            max_searches  # max_searches
         ) for i in range(obs_copy_len)]
 
-        pool = multiprocessing.Pool(processes=workers)
+        pool = Pool(processes=workers)
 
-        result = pool.map(func, func_arg_map)
+        result = pool.map(self._compute_indicator, args_map)
         pool.close()
 
-        self.indicator_result = result
-        return result
-
-    def _func_compute_indicator(self, args):
         #
-        obs, n_iter, window_size, smallest_window_size, increment, max_searches, filter_conditions_config = args
+        indicator_result_list.append(
+          self._res_to_df(
+            result,
+            list(filter_conditions_config[0].keys())[0]
+        ))
+
+    #
+    def _compute_indicator(self, args):
+        #
+        obs, n_iter, window_size, smallest_window_size, filter_conditions_config, increment, max_searches = args
         #
         n_fits = (window_size - smallest_window_size) // increment
         #
@@ -297,7 +347,7 @@ class LPPLS(object):
 
         return res
 
-    def res_to_df(self, res, condition_name):
+    def _res_to_df(self, res, condition_name):
         """
         Args:
             res (list): result from mp_compute_indicator
