@@ -155,43 +155,6 @@ class LPPLS(object):
         data = data.set_index('Time')
         data.plot(figsize=(14, 8))
 
-    def plot_confidence_indicators(self, result_index, title):
-        """
-        Args:
-            result_index (int):
-            title (str): super title for both subplots
-        Returns:
-            nothing, should plot the indicator
-        """
-        df = self.indicator_result_list[result_index]
-
-        fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, sharex=True, figsize=(15, 12))
-        fig.suptitle(title)
-
-        # plot pos bubbles
-        ax1_0 = ax1.twinx()
-        ax1.plot(df['pos_conf'].values, label='bubble indicator (pos)')
-        ax1_0.plot(df['price'].values, color='orange')
-
-        # plot neg bubbles
-        ax2_0 = ax2.twinx()
-        ax2.plot(df['neg_conf'].values, label='bubble indicator (neg)')
-        ax2_0.plot(df['price'].values, color='orange')
-
-        # set grids
-        ax1.grid(which='major', axis='both', linestyle='--')
-        ax2.grid(which='major', axis='both', linestyle='--')
-
-        # set labels
-        ax1.set_ylabel('bubble indicator (pos)')
-        ax2.set_ylabel('bubble indicator (neg)')
-
-        ax1_0.set_ylabel('price')
-        ax2_0.set_ylabel('price')
-
-        # ax1.legend(loc=2)
-        # ax2.legend(loc=2)
-
     #
     def compute_indicator_process(
         self,
@@ -224,6 +187,16 @@ class LPPLS(object):
 
             for process in processes:
                 process.join()
+
+            ## TEST ##
+            print(self.indicator_result_list[0])
+
+            #
+            self._plot_confidence_indicators(
+              ## THIS WILL NEED TO CHANGE WITH 'MEDIAN' APPROACH
+              self.indicator_result_list,
+              title='Short Term Indicator ' + str(window_size) + '-' + str(smallest_window_size)
+            )
 
         #*
         end = time.perf_counter()
@@ -392,3 +365,51 @@ class LPPLS(object):
             'neg_conf': neg_conf_lst,
             'fit_params': fits_,
         }).set_index('idx')
+
+    #
+    def _plot_confidence_indicators(self, indicator_result_list, title):
+        """
+        Args:
+            indicator_result_list (list proxy):
+            title (str): super title for both subplots
+        Returns:
+            nothing, should plot the indicator
+        """
+
+        ## THIS WILL NEED TO CHANGE WITH 'MEDIAN' APPROACH
+        df = indicator_result_list[0]
+
+        fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, sharex=True, figsize=(15, 12))
+        fig.suptitle(title)
+
+        # plot pos bubbles
+        ax1_0 = ax1.twinx()
+        ax1.plot(df['pos_conf'].values, label='bubble indicator (pos)')
+        ax1_0.plot(df['price'].values, color='orange')
+
+        # plot neg bubbles
+        ax2_0 = ax2.twinx()
+        ax2.plot(df['neg_conf'].values, label='bubble indicator (neg)')
+        ax2_0.plot(df['price'].values, color='orange')
+
+        # set y-axis confidence limits
+        y_bound = [0, 1]
+        ax1.set_ybound(y_bound)
+        ax2.set_ybound(y_bound)
+
+        # set grids
+        ax1.grid(which='major', axis='both', linestyle='--')
+        ax2.grid(which='major', axis='both', linestyle='--')
+
+        # set labels
+        ax1.set_ylabel('bubble indicator (pos)')
+        ax2.set_ylabel('bubble indicator (neg)')
+
+        ax1_0.set_ylabel('price')
+        ax2_0.set_ylabel('price')
+
+        # ax1.legend(loc=2)
+        # ax2.legend(loc=2)
+
+        #
+        fig.savefig("confidence_indicators.png")
