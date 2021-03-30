@@ -20,6 +20,7 @@ class LPPLS(object):
         self.observations = observations
         self.coef_ = {}
         self.indicator_result_list = None
+        self.indicator_confs_medians = None
 
     @staticmethod
     @njit
@@ -138,12 +139,6 @@ class LPPLS(object):
             raise UnboundLocalError
 
     def plot_fit(self):
-        """
-        Args:
-            observations (Mx2 numpy array): the observed data
-        Returns:
-            nothing, should plot the fit
-        """
         tc, m, w, a, b, c, c1, c2 = self.coef_.values()
         lppls_fit = self.lppls(self.observations[0], tc, m, w, a, b, c1, c2)
 
@@ -164,11 +159,16 @@ class LPPLS(object):
         num_processes=1
     ):
         #*
-        print('\n' + f'Now starting {num_processes} process(es)...')
+        print('\n' + f'Now starting {num_processes} process(es)...' + '\n')
         start = time.perf_counter()
 
         with Manager() as manager:
+            #
             self.indicator_result_list = manager.list()
+            # add lists (which will contain the confidence data) to the manager so that they can be shared among processes
+            pos_confs = manager.list()
+            neg_confs = manager.list()
+
             #
             processes = []
 
@@ -180,7 +180,9 @@ class LPPLS(object):
                         window_size,
                         smallest_window_size,
                         filter_conditions_config,
-                        self.indicator_result_list
+                        self.indicator_result_list,
+                        pos_confs,
+                        neg_confs
                     ])
                 p.start()
                 processes.append(p)
@@ -188,19 +190,34 @@ class LPPLS(object):
             for process in processes:
                 process.join()
 
-            ## TEST ##
-            print(self.indicator_result_list[0])
+            #
+            index = self.observations[0, :]
+            price = self.observations[1, :]
+
+            # convert ListProxys to DataFrames
+            pos_confs = pd.DataFrame({"pos_conf_" + str(k): pd.Series(pos_confs[k], dtype='float', index=index) for k in range(num_processes)})
+            neg_confs = pd.DataFrame({"neg_conf_" + str(k): pd.Series(neg_confs[k], dtype='float', index=index) for k in range(num_processes)})
+
+            # add row-wise medians of all processes
+            pos_confs["pos_conf_median"] = pos_confs.median(axis=1)
+            neg_confs["neg_conf_median"] = neg_confs.median(axis=1)
+
+            #
+            self.indicator_confs_medians = pd.DataFrame({
+                "price": price,
+                "pos_conf_median": pos_confs["pos_conf_median"],
+                "neg_conf_median": neg_confs["neg_conf_median"]
+            }).set_index(index)
 
             #
             self._plot_confidence_indicators(
-              ## THIS WILL NEED TO CHANGE WITH 'MEDIAN' APPROACH
-              self.indicator_result_list,
-              title='Short Term Indicator ' + str(window_size) + '-' + str(smallest_window_size)
+              self.indicator_confs_medians,
+              title='Short Term Indicator ' + str(window_size) + '-' + str(smallest_window_size) + '  [Median of ' + str(num_processes) + ' process(es)]'
             )
 
         #*
         end = time.perf_counter()
-        print(f'...finished in {round(end - start, 2)} second(s).' + '\n')
+        print('\n' + f'...finished in {round(end - start, 2)} second(s).' + '\n')
 
     #
     def _compute_indicator_pool(
@@ -209,6 +226,8 @@ class LPPLS(object):
         smallest_window_size,
         filter_conditions_config,
         indicator_result_list,
+        pos_confs,
+        neg_confs,
         increment=5,
         max_searches=25,
         workers=4
@@ -231,12 +250,17 @@ class LPPLS(object):
         result = pool.map(self._compute_indicator, args_map)
         pool.close()
 
+        # convert the result to a DataFrame
+        result_df = self._res_to_df(
+          result,
+          list(filter_conditions_config[0].keys())[0]
+        )
+
         #
-        indicator_result_list.append(
-          self._res_to_df(
-            result,
-            list(filter_conditions_config[0].keys())[0]
-        ))
+        indicator_result_list.append(result_df)
+        #
+        pos_confs.append(result_df["pos_conf"].tolist())
+        neg_confs.append(result_df["neg_conf"].tolist())
 
     #
     def _compute_indicator(self, args):
@@ -292,7 +316,10 @@ class LPPLS(object):
                     # number of Oscillations (half-periods), used to distinguish a genuine log-periodic signal from noise
                     O_in_range = (w / 2) * np.log((tc - start) / (tc - end)) > O_min
                     # Damping parameter expresses the crash hazard rate h(t) is non-negative by definition
-                    D_in_range = (m * abs(b)) / (w * c) > D_min
+                    try:
+                        D_in_range = (m * abs(b)) / (w * c) > D_min
+                    except (ZeroDivisionError):
+                        D_in_range = True
 
                     if tc_in_range and m_in_range and w_in_range and O_in_range and D_in_range:
                         is_qualified = True
@@ -323,7 +350,7 @@ class LPPLS(object):
     def _res_to_df(self, res, condition_name):
         """
         Args:
-            res (list): result from mp_compute_indicator
+            res (list): result from _compute_indicator
             condition_name (str): the name you assigned to the filter condition in your config
         Returns:
             pd.DataFrame()
@@ -367,29 +394,28 @@ class LPPLS(object):
         }).set_index('idx')
 
     #
-    def _plot_confidence_indicators(self, indicator_result_list, title):
+    def _plot_confidence_indicators(self, df, title):
         """
         Args:
-            indicator_result_list (list proxy):
+            df (DataFrame):
             title (str): super title for both subplots
         Returns:
             nothing, should plot the indicator
         """
 
-        ## THIS WILL NEED TO CHANGE WITH 'MEDIAN' APPROACH
-        df = indicator_result_list[0]
+        df = self.indicator_confs_medians
 
         fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, sharex=True, figsize=(15, 12))
         fig.suptitle(title)
 
         # plot pos bubbles
         ax1_0 = ax1.twinx()
-        ax1.plot(df['pos_conf'].values, label='bubble indicator (pos)')
+        ax1.plot(df['pos_conf_median'].values, label='bubble indicator (pos)')
         ax1_0.plot(df['price'].values, color='orange')
 
         # plot neg bubbles
         ax2_0 = ax2.twinx()
-        ax2.plot(df['neg_conf'].values, label='bubble indicator (neg)')
+        ax2.plot(df['neg_conf_median'].values, label='bubble indicator (neg)')
         ax2_0.plot(df['price'].values, color='orange')
 
         # set y-axis confidence limits
